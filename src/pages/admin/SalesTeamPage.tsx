@@ -34,6 +34,8 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import * as XLSX from 'xlsx';
+import { useRef } from 'react';
 
 interface TeamLeader {
   id: string;
@@ -77,6 +79,8 @@ export default function SalesTeamPage() {
   const [tlDialogOpen, setTlDialogOpen] = useState(false);
   const [captainDialogOpen, setCaptainDialogOpen] = useState(false);
   const [dsrDialogOpen, setDsrDialogOpen] = useState(false);
+  const [dsrBulkDialogOpen, setDsrBulkDialogOpen] = useState(false);
+  const [dsrExcelDialogOpen, setDsrExcelDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   // Edit states
@@ -89,6 +93,16 @@ export default function SalesTeamPage() {
   const [tlForm, setTlForm] = useState({ name: '', phone: '', region_id: '' });
   const [captainForm, setCaptainForm] = useState({ name: '', phone: '', team_leader_id: '' });
   const [dsrForm, setDsrForm] = useState({ name: '', phone: '', captain_id: '' });
+  const dsrFileRef = useRef<HTMLInputElement>(null);
+  const [dsrBulkInput, setDsrBulkInput] = useState('');
+  const [dsrExcelPreview, setDsrExcelPreview] = useState<{
+    name: string;
+    phone: string;
+    captain_id: string | null;
+    valid: boolean;
+    errors: string[];
+    __row?: number;
+  }[]>([]);
 
   // Expanded rows for hierarchy view
   const [expandedTLs, setExpandedTLs] = useState<string[]>([]);
@@ -203,6 +217,82 @@ export default function SalesTeamPage() {
     }
   };
 
+  const handleDsrBulkAdd = async () => {
+    const lines = dsrBulkInput
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [name, phone, captainNameOrId] = line.split(',').map((s) => s.trim());
+        const captain = captains.find((c) => c.name.toLowerCase() === (captainNameOrId || '').toLowerCase());
+        return {
+          name: name || '',
+          phone: phone || null,
+          captain_id: captain ? captain.id : (captainNameOrId || null),
+        };
+      })
+      .filter((i) => i.name);
+
+    if (lines.length === 0) {
+      toast({ title: 'No valid DSRs', variant: 'destructive' });
+      return;
+    }
+
+    const { error } = await supabase.from('dsrs').insert(lines);
+    if (!error) {
+      toast({ title: 'Success', description: `${lines.length} DSRs added.` });
+      setDsrBulkDialogOpen(false);
+      setDsrBulkInput('');
+      fetchData();
+    } else {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDsrExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+      const parsed = rows.slice(1).map((row, idx) => {
+        const name = String(row[0] || '').trim();
+        const phone = String(row[1] || '').trim() || null;
+        const captainRef = String(row[2] || '').trim();
+        const captain = captains.find((c) => c.name.toLowerCase() === captainRef.toLowerCase());
+        const errors: string[] = [];
+        if (!name) errors.push('Name required');
+        return { name, phone, captain_id: captain ? captain.id : (captainRef || null), valid: errors.length === 0, errors, __row: idx + 2 };
+      });
+      setDsrExcelPreview(parsed);
+      setDsrExcelDialogOpen(true);
+    };
+    reader.readAsArrayBuffer(file);
+    if (dsrFileRef.current) dsrFileRef.current.value = '';
+  };
+
+  const removeDsrExcelRow = (idx: number) => setDsrExcelPreview((p) => p.filter((_, i) => i !== idx));
+
+  const confirmDsrExcelImport = async () => {
+    const items = dsrExcelPreview.filter((r) => r.valid).map((r) => ({ name: r.name, phone: r.phone || null, captain_id: r.captain_id || null }));
+    if (items.length === 0) {
+      toast({ title: 'No valid rows', variant: 'destructive' });
+      return;
+    }
+    const { error } = await supabase.from('dsrs').insert(items);
+    if (!error) {
+      toast({ title: 'Imported', description: `${items.length} DSRs added.` });
+      setDsrExcelDialogOpen(false);
+      setDsrExcelPreview([]);
+      fetchData();
+    } else {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
   // Delete handler
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -311,6 +401,9 @@ export default function SalesTeamPage() {
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setDsrDialogOpen(true)}>
                     <Plus className="w-4 h-4 mr-1" /> DSR
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setDsrBulkDialogOpen(true)}>
+                    <Upload className="w-4 h-4 mr-1" /> Bulk Upload
                   </Button>
                 </div>
               </div>
@@ -674,6 +767,11 @@ export default function SalesTeamPage() {
                   <Plus className="w-4 h-4 mr-2" /> Add DSR
                 </Button>
               </div>
+              <div className="flex justify-end mb-4">
+                <Button variant="outline" onClick={() => setDsrBulkDialogOpen(true)}>
+                  <Upload className="w-4 h-4 mr-2" /> Bulk Upload
+                </Button>
+              </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 {dsrs.map((dsr) => (
                   <div key={dsr.id} className="glass-card p-4 rounded-xl border border-border/30">
@@ -875,6 +973,61 @@ export default function SalesTeamPage() {
               <Button onClick={handleDSRSubmit} className="bg-gradient-to-r from-primary to-secondary">
                 {editingDSR ? 'Update' : 'Add'}
               </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* DSR Bulk Dialog (textarea + Excel input) */}
+        <Dialog open={dsrBulkDialogOpen} onOpenChange={setDsrBulkDialogOpen}>
+          <DialogContent className="glass-card border-border/50 max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Bulk Add DSRs</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Enter one DSR per line: name, phone (optional), captain name or id (optional)</p>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => dsrFileRef.current?.click()}>
+                  <Upload className="w-4 h-4 mr-2" /> Import Excel
+                </Button>
+                <input type="file" ref={dsrFileRef} onChange={handleDsrExcelUpload} accept=".xlsx,.xls" className="hidden" />
+              </div>
+              <Textarea value={dsrBulkInput} onChange={(e) => setDsrBulkInput(e.target.value)} placeholder="John Doe, 0700, Captain A\nJane Roe, 0711, captain-id-123" className="glass-input" rows={8} />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDsrBulkDialogOpen(false)}>Cancel</Button>
+              <Button onClick={handleDsrBulkAdd} className="bg-gradient-to-r from-primary to-secondary">Add All</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* DSR Excel Preview Dialog */}
+        <Dialog open={dsrExcelDialogOpen} onOpenChange={setDsrExcelDialogOpen}>
+          <DialogContent className="glass-card border-border/50 max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>DSR Excel Preview</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 max-h-96 overflow-auto">
+              <table className="w-full text-sm table-auto border-collapse">
+                <thead>
+                  <tr className="text-left"><th className="p-2">#</th><th className="p-2">Name</th><th className="p-2">Phone</th><th className="p-2">Captain</th><th className="p-2">Status</th><th className="p-2">Actions</th></tr>
+                </thead>
+                <tbody>
+                  {dsrExcelPreview.map((r, i) => (
+                    <tr key={i} className={r.valid ? '' : 'bg-red-50'}>
+                      <td className="p-2">{r.__row || i + 2}</td>
+                      <td className="p-2">{r.name}</td>
+                      <td className="p-2">{r.phone}</td>
+                      <td className="p-2">{captains.find((c) => c.id === r.captain_id)?.name || r.captain_id || '-'}</td>
+                      <td className="p-2">{r.valid ? <Badge>Valid</Badge> : <div className="text-xs text-destructive">{r.errors.join('; ')}</div>}</td>
+                      <td className="p-2"><Button variant="ghost" size="sm" onClick={() => removeDsrExcelRow(i)}>Remove</Button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setDsrExcelDialogOpen(false); setDsrExcelPreview([]); }}>Cancel</Button>
+              <Button onClick={confirmDsrExcelImport} className="bg-gradient-to-r from-primary to-secondary">Import Valid Rows</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -98,12 +98,22 @@ export default function InventoryPage() {
   // Dialogs
   const [dialogOpen, setDialogOpen] = useState(false);
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [excelDialogOpen, setExcelDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   // State
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [deleteItem, setDeleteItem] = useState<InventoryItem | null>(null);
   const [bulkInput, setBulkInput] = useState('');
+  const [excelPreview, setExcelPreview] = useState<{
+    smartcard_number: string;
+    serial_number: string;
+    stock_type: string;
+    zone_id: string | null;
+    region_id: string | null;
+    valid: boolean;
+    errors: string[];
+  }[]>([]);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
   const [formData, setFormData] = useState({
@@ -240,32 +250,69 @@ export default function InventoryPage() {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
 
-      const items = rows
-        .slice(1)
-        .map((row) => ({
-          smartcard_number: String(row[0] || ''),
-          serial_number: String(row[1] || ''),
-          stock_type: row[2] || 'Full Set',
+      const parsed = rows.slice(1).map((row, index) => {
+        const sc = String(row[0] || '').trim();
+        const sn = String(row[1] || '').trim().toUpperCase();
+        const type = (row[2] || 'Full Set').toString();
+        const errors: string[] = [];
+
+        const scVal = validateSmartcard(sc);
+        if (!sc || !scVal.valid) errors.push(scVal.message || 'Invalid smartcard');
+
+        const snVal = validateSerialNumber(sn);
+        if (!sn || !snVal.valid) errors.push(snVal.message || 'Invalid serial');
+
+        return {
+          smartcard_number: sc,
+          serial_number: sn,
+          stock_type: type,
           zone_id: formData.zone_id || null,
           region_id: formData.region_id || null,
-        }))
-        .filter((i) => i.smartcard_number && i.serial_number && i.smartcard_number !== 'undefined');
+          valid: errors.length === 0,
+          errors,
+          __row: index + 2,
+        } as any;
+      });
 
-      if (items.length === 0) {
-        toast({ title: 'No valid items found', variant: 'destructive' });
+      if (parsed.length === 0) {
+        toast({ title: 'No rows found in the sheet', variant: 'destructive' });
         return;
       }
 
-      const { error } = await supabase.from('inventory').insert(items);
-      if (!error) {
-        toast({ title: 'Excel Import Success', description: `${items.length} items added.` });
-        fetchData();
-      } else {
-        toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      }
+      setExcelPreview(parsed as any);
+      setExcelDialogOpen(true);
     };
     reader.readAsArrayBuffer(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeExcelRow = (idx: number) => {
+    setExcelPreview((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const confirmExcelImport = async () => {
+    const items = excelPreview.filter((r) => r.valid).map((r) => ({
+      smartcard_number: r.smartcard_number,
+      serial_number: r.serial_number,
+      stock_type: r.stock_type || 'Full Set',
+      zone_id: r.zone_id || null,
+      region_id: r.region_id || null,
+    }));
+
+    if (items.length === 0) {
+      toast({ title: 'No valid rows', description: 'Please fix or remove invalid rows before importing.', variant: 'destructive' });
+      return;
+    }
+
+    const { error } = await supabase.from('inventory').insert(items);
+    if (!error) {
+      toast({ title: 'Imported', description: `${items.length} items added from Excel.` });
+      setExcelDialogOpen(false);
+      setExcelPreview([]);
+      fetchData();
+    } else {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
   };
 
   const handleDelete = async () => {
@@ -745,6 +792,62 @@ export default function InventoryPage() {
               </Button>
               <Button onClick={handleBulkUpload} className="bg-gradient-to-r from-primary to-secondary">
                 Upload
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Excel Preview Dialog */}
+        <Dialog open={excelDialogOpen} onOpenChange={setExcelDialogOpen}>
+          <DialogContent className="glass-card border-border/50 max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Excel Import Preview</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 max-h-96 overflow-auto">
+              <p className="text-sm text-muted-foreground">Rows marked in red have validation errors and won't be imported. Remove or fix them before confirming.</p>
+              <div className="overflow-auto">
+                <table className="w-full text-sm table-auto border-collapse">
+                  <thead>
+                    <tr className="text-left">
+                      <th className="p-2">#</th>
+                      <th className="p-2">Smartcard</th>
+                      <th className="p-2">Serial</th>
+                      <th className="p-2">Type</th>
+                      <th className="p-2">Status</th>
+                      <th className="p-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {excelPreview.map((r, i) => (
+                      <tr key={i} className={r.valid ? 'bg-transparent' : 'bg-red-50'}>
+                        <td className="p-2 align-top">{r.__row || i + 2}</td>
+                        <td className="p-2 align-top">{r.smartcard_number}</td>
+                        <td className="p-2 align-top">{r.serial_number}</td>
+                        <td className="p-2 align-top">{r.stock_type}</td>
+                        <td className="p-2 align-top">
+                          {r.valid ? (
+                            <Badge>Valid</Badge>
+                          ) : (
+                            <div className="text-xs text-destructive">
+                              {r.errors.join('; ')}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2 align-top">
+                          <Button variant="ghost" size="sm" onClick={() => removeExcelRow(i)}>Remove</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setExcelDialogOpen(false); setExcelPreview([]); }}>
+                Cancel
+              </Button>
+              <Button onClick={confirmExcelImport} className="bg-gradient-to-r from-primary to-secondary">
+                Import Valid Rows
               </Button>
             </DialogFooter>
           </DialogContent>

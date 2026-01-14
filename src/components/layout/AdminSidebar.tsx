@@ -1,9 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Package, 
-  Users, 
-  Upload, 
+import {
+  LayoutDashboard,
+  Package,
+  Users,
+  UploadCloud,
   Settings,
   LogOut,
   ChevronLeft,
@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
 const menuItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/admin/inventory', label: 'Inventory', icon: Package },
-  { href: '/admin/assign-stock', label: 'Assign Stock', icon: Upload },
+  { href: '/admin/assign-stock', label: 'Assign Stock', icon: UploadCloud },
   { href: '/admin/record-sales', label: 'Record Sales', icon: BarChart3 },
   { href: '/admin/sales-team', label: 'Sales Team', icon: Users },
   { href: '/admin/zones-regions', label: 'Zones & Regions', icon: MapPin },
@@ -42,8 +42,8 @@ export default function AdminSidebar() {
   return (
     <aside
       className={cn(
-        "fixed left-0 top-0 h-full z-40 sidebar-glass transition-all duration-300",
-        collapsed ? "w-20" : "w-64"
+        'fixed left-0 top-0 h-full z-40 sidebar-glass transition-all duration-300',
+        collapsed ? 'w-20' : 'w-64'
       )}
     >
       <div className="flex flex-col h-full p-4">
@@ -73,8 +73,8 @@ export default function AdminSidebar() {
         <Link
           to="/"
           className={cn(
-            "flex items-center gap-3 px-3 py-3 rounded-xl mb-4 text-sm font-medium transition-all duration-200 glass-button",
-            collapsed && "justify-center"
+            'flex items-center gap-3 px-3 py-3 rounded-xl mb-4 text-sm font-medium transition-all duration-200 glass-button',
+            collapsed && 'justify-center'
           )}
         >
           <Home className="h-5 w-5 text-primary" />
@@ -86,16 +86,17 @@ export default function AdminSidebar() {
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
+
             return (
               <Link
                 key={item.href}
                 to={item.href}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200",
+                  'flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200',
                   isActive
-                    ? "bg-primary text-primary-foreground shadow-blue"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                  collapsed && "justify-center"
+                    ? 'bg-primary text-primary-foreground shadow-blue'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted',
+                  collapsed && 'justify-center'
                 )}
               >
                 <Icon className="h-5 w-5 flex-shrink-0" />
@@ -120,8 +121,8 @@ export default function AdminSidebar() {
             onClick={handleSignOut}
             variant="ghost"
             className={cn(
-              "w-full flex items-center gap-3 text-destructive hover:text-destructive hover:bg-destructive/10",
-              collapsed && "justify-center"
+              'w-full flex items-center gap-3 text-destructive hover:text-destructive hover:bg-destructive/10',
+              collapsed && 'justify-center'
             )}
           >
             <LogOut className="h-5 w-5" />

@@ -55,6 +55,8 @@ interface InventoryItem {
   assigned_to_id: string | null;
   zone_id: string | null;
   region_id: string | null;
+  zone_name: string | null;
+  region_name: string | null;
 }
 
 interface TeamLeader {
@@ -112,13 +114,27 @@ export default function AssignStockPage() {
     setLoading(true);
     try {
       const [invRes, tlRes, captainRes, dsrRes] = await Promise.all([
-        supabase.from('inventory').select('*').order('created_at', { ascending: false }),
+        supabase
+          .from('inventory')
+          .select(`
+            *,
+            zones!inventory_zone_id_fkey(name),
+            regions!inventory_region_id_fkey(name)
+          `)
+          .order('created_at', { ascending: false }),
         supabase.from('team_leaders').select('id, name').order('name'),
         supabase.from('captains').select('id, name, team_leader_id').order('name'),
         supabase.from('dsrs').select('id, name, captain_id').order('name'),
       ]);
 
-      if (invRes.data) setInventory(invRes.data);
+      if (invRes.data) {
+        const formattedData = invRes.data.map(item => ({
+          ...item,
+          zone_name: item.zones?.name || null,
+          region_name: item.regions?.name || null
+        }));
+        setInventory(formattedData);
+      }
       if (tlRes.data) setTeamLeaders(tlRes.data);
       if (captainRes.data) setCaptains(captainRes.data);
       if (dsrRes.data) setDsrs(dsrRes.data);
@@ -423,6 +439,8 @@ export default function AssignStockPage() {
                 </TableHead>
                 <TableHead>Smartcard / Serial</TableHead>
                 <TableHead>Type</TableHead>
+                <TableHead>Zone</TableHead>
+                <TableHead>Region</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Assigned To</TableHead>
               </TableRow>
@@ -430,7 +448,7 @@ export default function AssignStockPage() {
             <TableBody>
               {filteredInventory.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     No inventory items found
                   </TableCell>
                 </TableRow>
@@ -457,6 +475,24 @@ export default function AssignStockPage() {
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">{item.stock_type}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {item.zone_name ? (
+                          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                            {item.zone_name}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {item.region_name ? (
+                          <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
+                            {item.region_name}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">-</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge

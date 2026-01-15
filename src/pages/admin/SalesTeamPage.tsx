@@ -9,6 +9,10 @@ import {
   MapPin,
   ChevronDown,
   ChevronRight,
+  Upload,
+  Download,
+  FileText,
+  X,
 } from 'lucide-react';
 import AdminLayout from '@/components/layout/AdminLayout';
 import GlassCard from '@/components/ui/GlassCard';
@@ -21,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from '@/components/ui/dialog';
 import {
   Select,
@@ -32,6 +37,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -78,6 +84,7 @@ export default function SalesTeamPage() {
   const [captainDialogOpen, setCaptainDialogOpen] = useState(false);
   const [dsrDialogOpen, setDsrDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [bulkDsrDialogOpen, setBulkDsrDialogOpen] = useState(false);
 
   // Edit states
   const [editingTL, setEditingTL] = useState<TeamLeader | null>(null);
@@ -89,6 +96,14 @@ export default function SalesTeamPage() {
   const [tlForm, setTlForm] = useState({ name: '', phone: '', region_id: '' });
   const [captainForm, setCaptainForm] = useState({ name: '', phone: '', team_leader_id: '' });
   const [dsrForm, setDsrForm] = useState({ name: '', phone: '', captain_id: '' });
+
+  // Bulk DSR state
+  const [bulkDsrData, setBulkDsrData] = useState({
+    captain_id: '',
+    dsrList: '',
+  });
+  const [parsedDsrs, setParsedDsrs] = useState<Array<{name: string, phone?: string}>>([]);
+  const [processingBulk, setProcessingBulk] = useState(false);
 
   // Expanded rows for hierarchy view
   const [expandedTLs, setExpandedTLs] = useState<string[]>([]);
@@ -203,6 +218,130 @@ export default function SalesTeamPage() {
     }
   };
 
+  // Parse DSR list from text input
+  const parseDsrList = () => {
+    if (!bulkDsrData.dsrList.trim()) {
+      setParsedDsrs([]);
+      return;
+    }
+
+    const lines = bulkDsrData.dsrList.split('\n');
+    const parsed: Array<{name: string, phone?: string}> = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Check for comma or tab separated values
+      let name = '';
+      let phone = '';
+
+      if (trimmed.includes(',')) {
+        const parts = trimmed.split(',').map(p => p.trim());
+        name = parts[0] || '';
+        phone = parts[1] || '';
+      } else if (trimmed.includes('\t')) {
+        const parts = trimmed.split('\t').map(p => p.trim());
+        name = parts[0] || '';
+        phone = parts[1] || '';
+      } else {
+        // Single value, assume it's a name
+        name = trimmed;
+      }
+
+      if (name) {
+        parsed.push({ name, phone: phone || undefined });
+      }
+    }
+
+    setParsedDsrs(parsed);
+  };
+
+  // Handle bulk DSR import
+  const handleBulkDsrImport = async () => {
+    if (!bulkDsrData.captain_id) {
+      toast({ title: 'Error', description: 'Please select a captain for the DSRs', variant: 'destructive' });
+      return;
+    }
+
+    if (parsedDsrs.length === 0) {
+      toast({ title: 'Error', description: 'No valid DSR data found', variant: 'destructive' });
+      return;
+    }
+
+    setProcessingBulk(true);
+
+    try {
+      // Prepare DSR data for insertion
+      const dsrData = parsedDsrs.map(dsr => ({
+        name: dsr.name,
+        phone: dsr.phone || null,
+        captain_id: bulkDsrData.captain_id,
+      }));
+
+      // Insert DSRs in batches to avoid exceeding limits
+      const batchSize = 50;
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (let i = 0; i < dsrData.length; i += batchSize) {
+        const batch = dsrData.slice(i, i + batchSize);
+        const { error } = await supabase.from('dsrs').insert(batch);
+
+        if (error) {
+          console.error('Error inserting batch:', error);
+          errorCount += batch.length;
+        } else {
+          successCount += batch.length;
+        }
+      }
+
+      // Show results
+      if (successCount > 0) {
+        toast({
+          title: 'Bulk Import Complete',
+          description: `Successfully imported ${successCount} DSRs${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+        });
+      } else {
+        toast({
+          title: 'Import Failed',
+          description: 'Failed to import any DSRs. Please check the data and try again.',
+          variant: 'destructive',
+        });
+      }
+
+      // Reset and close
+      if (successCount > 0) {
+        setBulkDsrData({ captain_id: '', dsrList: '' });
+        setParsedDsrs([]);
+        setBulkDsrDialogOpen(false);
+        fetchData();
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error?.message || 'Failed to import DSRs',
+        variant: 'destructive',
+      });
+    } finally {
+      setProcessingBulk(false);
+    }
+  };
+
+  // Download template CSV
+  const downloadTemplate = () => {
+    const template = "Name,Phone\nJohn Doe,1234567890\nJane Smith,0987654321\nMike Johnson,\nSarah Williams,1112223333";
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'dsr_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
   // Delete handler
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -237,6 +376,11 @@ export default function SalesTeamPage() {
   const toggleCaptain = (id: string) => {
     setExpandedCaptains((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
+
+  // Parse DSR list when text changes
+  useEffect(() => {
+    parseDsrList();
+  }, [bulkDsrData.dsrList]);
 
   if (loading) {
     return (
@@ -308,6 +452,9 @@ export default function SalesTeamPage() {
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setCaptainDialogOpen(true)}>
                     <Plus className="w-4 h-4 mr-1" /> Captain
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setBulkDsrDialogOpen(true)}>
+                    <Upload className="w-4 h-4 mr-1" /> Bulk DSRs
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setDsrDialogOpen(true)}>
                     <Plus className="w-4 h-4 mr-1" /> DSR
@@ -663,16 +810,27 @@ export default function SalesTeamPage() {
           <TabsContent value="dsrs" className="mt-4">
             <GlassCard>
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold">DSRs</h3>
-                <Button
-                  onClick={() => {
-                    setEditingDSR(null);
-                    setDsrForm({ name: '', phone: '', captain_id: '' });
-                    setDsrDialogOpen(true);
-                  }}
-                >
-                  <Plus className="w-4 h-4 mr-2" /> Add DSR
-                </Button>
+                <div>
+                  <h3 className="text-lg font-semibold">DSRs</h3>
+                  <p className="text-sm text-muted-foreground">Total {dsrs.length} DSRs registered</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => setBulkDsrDialogOpen(true)}
+                  >
+                    <Upload className="w-4 h-4 mr-2" /> Bulk Import
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setEditingDSR(null);
+                      setDsrForm({ name: '', phone: '', captain_id: '' });
+                      setDsrDialogOpen(true);
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-2" /> Add DSR
+                  </Button>
+                </div>
               </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 {dsrs.map((dsr) => (
@@ -874,6 +1032,180 @@ export default function SalesTeamPage() {
               </Button>
               <Button onClick={handleDSRSubmit} className="bg-gradient-to-r from-primary to-secondary">
                 {editingDSR ? 'Update' : 'Add'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Bulk DSR Import Dialog */}
+        <Dialog open={bulkDsrDialogOpen} onOpenChange={setBulkDsrDialogOpen}>
+          <DialogContent className="glass-card border-border/50 max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Bulk DSR Import</DialogTitle>
+              <DialogDescription>
+                Import multiple DSRs at once. Each line should contain DSR details (Name, Phone optional).
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-6">
+              {/* Captain Selection */}
+              <div>
+                <Label className="text-base font-semibold">Select Captain *</Label>
+                <p className="text-sm text-muted-foreground mb-2">All imported DSRs will be assigned to this captain</p>
+                <Select
+                  value={bulkDsrData.captain_id}
+                  onValueChange={(v) => setBulkDsrData({ ...bulkDsrData, captain_id: v })}
+                >
+                  <SelectTrigger className="glass-input">
+                    <SelectValue placeholder="Select captain for all DSRs" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {captains.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name} {c.team_leader_id && `(TL: ${teamLeaders.find(t => t.id === c.team_leader_id)?.name})`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Import Instructions */}
+              <div className="border border-border/30 rounded-lg p-4 bg-muted/20">
+                <div className="flex items-center justify-between mb-2">
+                  <Label className="text-base font-semibold">Import Format</Label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={downloadTemplate}
+                    className="h-8"
+                  >
+                    <Download className="w-3 h-3 mr-2" />
+                    Download Template
+                  </Button>
+                </div>
+                <div className="space-y-2 text-sm">
+                  <p className="text-muted-foreground">You can import DSRs using either format:</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <p className="font-medium">CSV Format (recommended):</p>
+                      <pre className="text-xs bg-background/50 p-2 rounded border">
+                        John Doe,1234567890{'\n'}
+                        Jane Smith,0987654321{'\n'}
+                        Mike Johnson{'\n'}
+                        Sarah Williams,1112223333
+                      </pre>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-medium">Line by Line:</p>
+                      <pre className="text-xs bg-background/50 p-2 rounded border">
+                        John Doe{'\n'}
+                        Jane Smith 0987654321{'\n'}
+                        Mike Johnson{'\n'}
+                        Sarah Williams (1112223333)
+                      </pre>
+                    </div>
+                  </div>
+                  <p className="text-muted-foreground mt-2">
+                    <strong>Note:</strong> Phone numbers are optional. Names are required.
+                  </p>
+                </div>
+              </div>
+
+              {/* DSR Input Area */}
+              <div>
+                <Label className="text-base font-semibold">DSR List *</Label>
+                <p className="text-sm text-muted-foreground mb-2">Enter one DSR per line. You can paste from Excel or CSV.</p>
+                <Textarea
+                  value={bulkDsrData.dsrList}
+                  onChange={(e) => setBulkDsrData({ ...bulkDsrData, dsrList: e.target.value })}
+                  className="glass-input min-h-[200px] font-mono text-sm"
+                  placeholder="John Doe,1234567890&#10;Jane Smith,0987654321&#10;Mike Johnson&#10;Sarah Williams,1112223333"
+                />
+              </div>
+
+              {/* Preview Section */}
+              {parsedDsrs.length > 0 && (
+                <div className="border border-border/30 rounded-lg overflow-hidden">
+                  <div className="p-3 bg-muted/30 flex justify-between items-center">
+                    <div>
+                      <span className="font-semibold">Preview ({parsedDsrs.length} DSRs)</span>
+                      <Badge variant="outline" className="ml-2">
+                        {bulkDsrData.captain_id 
+                          ? `Assigned to: ${captains.find(c => c.id === bulkDsrData.captain_id)?.name}`
+                          : 'No captain selected'
+                        }
+                      </Badge>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setParsedDsrs([])}
+                    >
+                      <X className="w-3 h-3 mr-1" />
+                      Clear
+                    </Button>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/20">
+                        <tr>
+                          <th className="text-left p-2 border-b border-border/30">#</th>
+                          <th className="text-left p-2 border-b border-border/30">Name</th>
+                          <th className="text-left p-2 border-b border-border/30">Phone</th>
+                          <th className="text-left p-2 border-b border-border/30">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {parsedDsrs.map((dsr, index) => (
+                          <tr key={index} className="border-b border-border/10 hover:bg-muted/10">
+                            <td className="p-2">{index + 1}</td>
+                            <td className="p-2 font-medium">{dsr.name}</td>
+                            <td className="p-2 text-muted-foreground">{dsr.phone || '-'}</td>
+                            <td className="p-2">
+                              <Badge variant={dsr.name ? "outline" : "destructive"}>
+                                {dsr.name ? 'Ready' : 'Invalid'}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Validation Errors */}
+              {parsedDsrs.length === 0 && bulkDsrData.dsrList.trim() && (
+                <div className="p-3 border border-warning/30 rounded-lg bg-warning/10">
+                  <p className="text-warning text-sm">
+                    No valid DSR data found. Please check the format and try again.
+                  </p>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => {
+                setBulkDsrDialogOpen(false);
+                setBulkDsrData({ captain_id: '', dsrList: '' });
+                setParsedDsrs([]);
+              }}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBulkDsrImport}
+                disabled={!bulkDsrData.captain_id || parsedDsrs.length === 0 || processingBulk}
+                className="bg-gradient-to-r from-primary to-secondary"
+              >
+                {processingBulk ? (
+                  <>
+                    <span className="animate-spin mr-2">⏳</span>
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4 mr-2" />
+                    Import {parsedDsrs.length} DSRs
+                  </>
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>

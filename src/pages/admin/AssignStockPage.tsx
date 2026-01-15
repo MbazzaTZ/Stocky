@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ArrowRight,
   Package,
@@ -10,6 +10,15 @@ import {
   History,
   Edit,
   Trash2,
+  Filter,
+  Download,
+  RefreshCw,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  BarChart3,
+  Smartphone,
+  FileSpreadsheet,
 } from 'lucide-react';
 import AdminLayout from '@/components/layout/AdminLayout';
 import GlassCard from '@/components/ui/GlassCard';
@@ -22,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from '@/components/ui/dialog';
 import {
   Select,
@@ -42,8 +52,11 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { Progress } from '@/components/ui/progress';
+import * as XLSX from 'xlsx';
 
 interface InventoryItem {
   id: string;
@@ -57,23 +70,27 @@ interface InventoryItem {
   region_id: string | null;
   zone_name: string | null;
   region_name: string | null;
+  created_at: string;
 }
 
 interface TeamLeader {
   id: string;
   name: string;
+  region_id?: string | null;
 }
 
 interface Captain {
   id: string;
   name: string;
   team_leader_id: string | null;
+  team_leaders?: { name: string };
 }
 
 interface DSR {
   id: string;
   name: string;
   captain_id: string | null;
+  captains?: { name: string; team_leader_id?: string };
 }
 
 interface AssignmentStats {
@@ -83,6 +100,21 @@ interface AssignmentStats {
   assignedCaptain: number;
   assignedDSR: number;
   sold: number;
+  denied: number;
+  returned: number;
+  readyForAssignment: number;
+  assignmentRate: number;
+}
+
+interface AssignmentHistory {
+  id: string;
+  inventory_id: string;
+  assigned_to_type: string;
+  assigned_to_id: string;
+  assigned_by: string;
+  assigned_at: string;
+  notes: string | null;
+  previous_assignment: string | null;
 }
 
 export default function AssignStockPage() {
@@ -92,39 +124,77 @@ export default function AssignStockPage() {
   const [teamLeaders, setTeamLeaders] = useState<TeamLeader[]>([]);
   const [captains, setCaptains] = useState<Captain[]>([]);
   const [dsrs, setDsrs] = useState<DSR[]>([]);
-
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
+  const [bulkSelectAll, setBulkSelectAll] = useState(false);
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [assignedFilter, setAssignedFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [assignmentFilter, setAssignmentFilter] = useState('all');
+  const [zoneFilter, setZoneFilter] = useState('all');
+  const [regionFilter, setRegionFilter] = useState('all');
+  const [activeTab, setActiveTab] = useState('all');
 
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = useState(false);
-
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [selectedInventoryItem, setSelectedInventoryItem] = useState<InventoryItem | null>(null);
+  
   const [assignmentData, setAssignmentData] = useState({
     assign_type: 'team_leader',
     assign_to_id: '',
+    notes: '',
+    effective_date: new Date().toISOString().split('T')[0],
   });
 
   const [bulkEditData, setBulkEditData] = useState({
     status: '',
+    notes: '',
   });
+
+  const [stats, setStats] = useState<AssignmentStats>({
+    total: 0,
+    available: 0,
+    assignedTL: 0,
+    assignedCaptain: 0,
+    assignedDSR: 0,
+    sold: 0,
+    denied: 0,
+    returned: 0,
+    readyForAssignment: 0,
+    assignmentRate: 0,
+  });
+
+  const [assignmentHistory, setAssignmentHistory] = useState<AssignmentHistory[]>([]);
+  const [zones, setZones] = useState<Array<{id: string, name: string}>>([]);
+  const [regions, setRegions] = useState<Array<{id: string, name: string, zone_id: string}>>([]);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [invRes, tlRes, captainRes, dsrRes] = await Promise.all([
+      const [
+        invRes,
+        tlRes,
+        capRes,
+        dsrRes,
+        zoneRes,
+        regionRes,
+      ] = await Promise.all([
         supabase
           .from('inventory')
-          .select(`
-            *,
-            zones!inventory_zone_id_fkey(name),
-            regions!inventory_region_id_fkey(name)
-          `)
+          .select('*, zones!inventory_zone_id_fkey(name), regions!inventory_region_id_fkey(name)')
           .order('created_at', { ascending: false }),
-        supabase.from('team_leaders').select('id, name').order('name'),
-        supabase.from('captains').select('id, name, team_leader_id').order('name'),
-        supabase.from('dsrs').select('id, name, captain_id').order('name'),
+        supabase.from('team_leaders').select('id, name, region_id'),
+        supabase.from('captains').select('*, team_leaders!captains_team_leader_id_fkey(name)'),
+        supabase.from('dsrs').select('*, captains!dsrs_captain_id_fkey(name, team_leader_id)'),
+        supabase.from('zones').select('id, name').order('name'),
+        supabase.from('regions').select('id, name, zone_id').order('name'),
       ]);
 
       if (invRes.data) {
@@ -134,187 +204,434 @@ export default function AssignStockPage() {
           region_name: item.regions?.name || null
         }));
         setInventory(formattedData);
+        calculateStats(formattedData);
       }
+      
       if (tlRes.data) setTeamLeaders(tlRes.data);
-      if (captainRes.data) setCaptains(captainRes.data);
+      if (capRes.data) setCaptains(capRes.data);
       if (dsrRes.data) setDsrs(dsrRes.data);
-    } catch (error) {
-      console.error('Error fetching data:', error);
+      if (zoneRes.data) setZones(zoneRes.data);
+      if (regionRes.data) setRegions(regionRes.data);
+    } catch (error: any) {
+      toast({ 
+        title: 'Error fetching data', 
+        description: error.message, 
+        variant: 'destructive' 
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchData();
+  const calculateStats = useCallback((data: InventoryItem[]) => {
+    const total = data.length;
+    const available = data.filter(i => i.status === 'available' && !i.assigned_to_id).length;
+    const assignedTL = data.filter(i => i.assigned_to_type === 'team_leader').length;
+    const assignedCaptain = data.filter(i => i.assigned_to_type === 'captain').length;
+    const assignedDSR = data.filter(i => i.assigned_to_type === 'dsr').length;
+    const sold = data.filter(i => i.status === 'sold').length;
+    const denied = data.filter(i => i.status === 'denied').length;
+    const returned = data.filter(i => i.status === 'returned').length;
+    const readyForAssignment = available + assignedTL + assignedCaptain + assignedDSR;
+    const assignmentRate = total > 0 ? ((assignedTL + assignedCaptain + assignedDSR) / total) * 100 : 0;
+
+    setStats({
+      total,
+      available,
+      assignedTL,
+      assignedCaptain,
+      assignedDSR,
+      sold,
+      denied,
+      returned,
+      readyForAssignment,
+      assignmentRate: parseFloat(assignmentRate.toFixed(1)),
+    });
   }, []);
 
-  const getAssigneeName = (item: InventoryItem) => {
-    if (!item.assigned_to_type || !item.assigned_to_id) return null;
-    switch (item.assigned_to_type) {
-      case 'team_leader':
-        return teamLeaders.find((t) => t.id === item.assigned_to_id)?.name;
-      case 'captain':
-        return captains.find((c) => c.id === item.assigned_to_id)?.name;
-      case 'dsr':
-        return dsrs.find((d) => d.id === item.assigned_to_id)?.name;
-      default:
-        return null;
-    }
+  const filteredInventory = useMemo(() => {
+    return inventory.filter(item => {
+      const matchesSearch = 
+        item.smartcard_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.serial_number.toLowerCase().includes(searchQuery.toLowerCase());
+      
+      const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
+      const matchesType = typeFilter === 'all' || item.stock_type === typeFilter;
+      
+      let matchesAssignment = true;
+      if (assignmentFilter !== 'all') {
+        if (assignmentFilter === 'assigned') {
+          matchesAssignment = !!item.assigned_to_id;
+        } else if (assignmentFilter === 'unassigned') {
+          matchesAssignment = !item.assigned_to_id;
+        } else {
+          matchesAssignment = item.assigned_to_type === assignmentFilter;
+        }
+      }
+
+      const matchesZone = zoneFilter === 'all' || item.zone_id === zoneFilter;
+      const matchesRegion = regionFilter === 'all' || item.region_id === regionFilter;
+
+      // Tab-based filtering
+      if (activeTab !== 'all') {
+        if (activeTab === 'available') {
+          return matchesSearch && item.status === 'available' && !item.assigned_to_id;
+        } else if (activeTab === 'assigned') {
+          return matchesSearch && item.assigned_to_id !== null;
+        } else if (activeTab === 'sold') {
+          return matchesSearch && item.status === 'sold';
+        }
+      }
+
+      return matchesSearch && matchesStatus && matchesType && matchesAssignment && matchesZone && matchesRegion;
+    });
+  }, [inventory, searchQuery, statusFilter, typeFilter, assignmentFilter, zoneFilter, regionFilter, activeTab]);
+
+  const eligibleForSelection = useMemo(() => {
+    return filteredInventory.filter(item => 
+      item.status !== 'sold' && item.status !== 'denied'
+    ).map(item => item.id);
+  }, [filteredInventory]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedItems(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
   };
 
-  const getAssigneeOptions = () => {
-    switch (assignmentData.assign_type) {
-      case 'team_leader':
-        return teamLeaders;
-      case 'captain':
-        return captains;
-      case 'dsr':
-        return dsrs;
-      default:
-        return [];
+  const toggleSelectAll = () => {
+    if (selectedItems.length === eligibleForSelection.length) {
+      setSelectedItems([]);
+      setBulkSelectAll(false);
+    } else {
+      setSelectedItems([...eligibleForSelection]);
+      setBulkSelectAll(true);
     }
   };
 
   const handleAssign = async () => {
     if (selectedItems.length === 0) {
-      toast({ title: 'No items selected', variant: 'destructive' });
+      toast({ 
+        title: 'No items selected', 
+        description: 'Please select at least one item to assign.',
+        variant: 'destructive' 
+      });
       return;
     }
 
     if (!assignmentData.assign_to_id) {
-      toast({ title: 'Please select who to assign to', variant: 'destructive' });
+      toast({ 
+        title: 'No recipient selected', 
+        description: 'Please select a team member to assign stock to.',
+        variant: 'destructive' 
+      });
       return;
     }
 
-    const { error } = await supabase
-      .from('inventory')
-      .update({
+    setLoading(true);
+    try {
+      // Check if any selected items are already sold or denied
+      const selectedItemsData = inventory.filter(item => selectedItems.includes(item.id));
+      const invalidItems = selectedItemsData.filter(item => 
+        item.status === 'sold' || item.status === 'denied'
+      );
+
+      if (invalidItems.length > 0) {
+        toast({ 
+          title: 'Cannot assign sold/denied items', 
+          description: `${invalidItems.length} items are sold or denied and cannot be assigned.`,
+          variant: 'destructive' 
+        });
+        return;
+      }
+
+      // Update inventory
+      const { error } = await supabase
+        .from('inventory')
+        .update({
+          status: 'assigned',
+          assigned_to_type: assignmentData.assign_type,
+          assigned_to_id: assignmentData.assign_to_id,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', selectedItems);
+
+      if (error) throw error;
+
+      // Record assignment history
+      const historyEntries = selectedItems.map(itemId => ({
+        inventory_id: itemId,
         assigned_to_type: assignmentData.assign_type,
         assigned_to_id: assignmentData.assign_to_id,
-        status: 'assigned',
-      })
-      .in('id', selectedItems);
+        assigned_by: 'admin', // In real app, get from auth
+        assigned_at: new Date().toISOString(),
+        notes: assignmentData.notes || null,
+        previous_assignment: null,
+      }));
 
-    if (!error) {
-      toast({ title: 'Success', description: `${selectedItems.length} items assigned.` });
+      await supabase.from('assignment_history').insert(historyEntries);
+
+      toast({ 
+        title: 'Stock Assigned Successfully', 
+        description: `${selectedItems.length} items assigned to ${getAssigneeName()}.`,
+      });
+
       setAssignDialogOpen(false);
       setSelectedItems([]);
-      setAssignmentData({ assign_type: 'team_leader', assign_to_id: '' });
+      setAssignmentData({
+        assign_type: 'team_leader',
+        assign_to_id: '',
+        notes: '',
+        effective_date: new Date().toISOString().split('T')[0],
+      });
       fetchData();
-    } else {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } catch (error: any) {
+      toast({ 
+        title: 'Assignment Failed', 
+        description: error.message, 
+        variant: 'destructive' 
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleUnassign = async () => {
     if (selectedItems.length === 0) return;
 
-    const { error } = await supabase
-      .from('inventory')
-      .update({
-        assigned_to_type: null,
-        assigned_to_id: null,
-        status: 'available',
-      })
-      .in('id', selectedItems);
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('inventory')
+        .update({
+          status: 'available',
+          assigned_to_type: null,
+          assigned_to_id: null,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', selectedItems);
 
-    if (!error) {
-      toast({ title: 'Success', description: `${selectedItems.length} items unassigned.` });
+      if (error) throw error;
+
+      toast({ 
+        title: 'Stock Unassigned', 
+        description: `${selectedItems.length} items returned to available stock.` 
+      });
       setSelectedItems([]);
       fetchData();
-    } else {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } catch (error: any) {
+      toast({ 
+        title: 'Operation Failed', 
+        description: error.message, 
+        variant: 'destructive' 
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleBulkEdit = async () => {
     if (selectedItems.length === 0) return;
 
-    const updateData: any = {};
-    if (bulkEditData.status) {
-      updateData.status = bulkEditData.status;
-    }
+    setLoading(true);
+    try {
+      const updateData: any = {};
+      if (bulkEditData.status) {
+        updateData.status = bulkEditData.status;
+        if (bulkEditData.status === 'available') {
+          updateData.assigned_to_type = null;
+          updateData.assigned_to_id = null;
+        }
+        updateData.updated_at = new Date().toISOString();
+      }
 
-    if (Object.keys(updateData).length === 0) {
-      toast({ title: 'No changes to apply', variant: 'destructive' });
-      return;
-    }
+      const { error } = await supabase
+        .from('inventory')
+        .update(updateData)
+        .in('id', selectedItems);
 
-    const { error } = await supabase.from('inventory').update(updateData).in('id', selectedItems);
+      if (error) throw error;
 
-    if (!error) {
-      toast({ title: 'Success', description: `${selectedItems.length} items updated.` });
+      if (bulkEditData.notes) {
+        // Add notes to history
+        const historyEntries = selectedItems.map(itemId => ({
+          inventory_id: itemId,
+          notes: bulkEditData.notes,
+          updated_by: 'admin',
+          updated_at: new Date().toISOString(),
+          action: 'bulk_update',
+        }));
+
+        await supabase.from('inventory_history').insert(historyEntries);
+      }
+
+      toast({ title: 'Bulk Update Successful', description: `${selectedItems.length} items updated.` });
       setBulkEditDialogOpen(false);
       setSelectedItems([]);
-      setBulkEditData({ status: '' });
+      setBulkEditData({ status: '', notes: '' });
       fetchData();
-    } else {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } catch (error: any) {
+      toast({ 
+        title: 'Bulk Update Failed', 
+        description: error.message, 
+        variant: 'destructive' 
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (selectedItems.length === 0) return;
+  const handleExport = async (type: 'selected' | 'filtered' | 'all') => {
+    setExporting(true);
+    try {
+      let exportData: InventoryItem[] = [];
 
-    const { error } = await supabase.from('inventory').delete().in('id', selectedItems);
+      switch (type) {
+        case 'selected':
+          exportData = inventory.filter(item => selectedItems.includes(item.id));
+          break;
+        case 'filtered':
+          exportData = filteredInventory;
+          break;
+        case 'all':
+          exportData = inventory;
+          break;
+      }
 
-    if (!error) {
-      toast({ title: 'Deleted', description: `${selectedItems.length} items removed.` });
-      setSelectedItems([]);
-      fetchData();
-    } else {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      if (exportData.length === 0) {
+        toast({ title: 'No data to export', variant: 'destructive' });
+        return;
+      }
+
+      // Format data for Excel
+      const formattedData = exportData.map(item => ({
+        'Smartcard Number': item.smartcard_number,
+        'Serial Number': item.serial_number,
+        'Stock Type': item.stock_type,
+        'Status': item.status,
+        'Assigned To Type': item.assigned_to_type || 'N/A',
+        'Assigned To ID': item.assigned_to_id || 'N/A',
+        'Zone': item.zone_name || 'N/A',
+        'Region': item.region_name || 'N/A',
+        'Created Date': new Date(item.created_at).toLocaleDateString(),
+        'Assignee Name': getFullAssigneeName(item),
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(formattedData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Assignments');
+      
+      const filename = `stock_assignments_${new Date().toISOString().split('T')[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+
+      toast({ title: 'Export Successful', description: `${exportData.length} items exported.` });
+    } catch (error: any) {
+      toast({ title: 'Export Failed', description: error.message, variant: 'destructive' });
+    } finally {
+      setExporting(false);
+      setExportDialogOpen(false);
     }
   };
 
-  const filteredInventory = inventory.filter((item) => {
-    const matchesSearch =
-      item.smartcard_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.serial_number.toLowerCase().includes(searchQuery.toLowerCase());
+  const fetchAssignmentHistory = async (inventoryId: string) => {
+    try {
+      const { data } = await supabase
+        .from('assignment_history')
+        .select('*')
+        .eq('inventory_id', inventoryId)
+        .order('assigned_at', { ascending: false });
 
-    const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
-
-    let matchesAssigned = true;
-    if (assignedFilter === 'unassigned') {
-      matchesAssigned = !item.assigned_to_id;
-    } else if (assignedFilter === 'assigned') {
-      matchesAssigned = !!item.assigned_to_id;
-    } else if (assignedFilter === 'team_leader') {
-      matchesAssigned = item.assigned_to_type === 'team_leader';
-    } else if (assignedFilter === 'captain') {
-      matchesAssigned = item.assigned_to_type === 'captain';
-    } else if (assignedFilter === 'dsr') {
-      matchesAssigned = item.assigned_to_type === 'dsr';
+      setAssignmentHistory(data || []);
+      setSelectedInventoryItem(inventory.find(item => item.id === inventoryId) || null);
+      setHistoryDialogOpen(true);
+    } catch (error) {
+      toast({ title: 'Error fetching history', variant: 'destructive' });
     }
-
-    return matchesSearch && matchesStatus && matchesAssigned;
-  });
-
-  const stats: AssignmentStats = {
-    total: inventory.length,
-    available: inventory.filter((i) => i.status === 'available' && !i.assigned_to_id).length,
-    assignedTL: inventory.filter((i) => i.assigned_to_type === 'team_leader').length,
-    assignedCaptain: inventory.filter((i) => i.assigned_to_type === 'captain').length,
-    assignedDSR: inventory.filter((i) => i.assigned_to_type === 'dsr').length,
-    sold: inventory.filter((i) => i.status === 'sold').length,
   };
 
-  if (loading) {
-    return (
-      <AdminLayout>
-        <div className="space-y-6">
-          <Skeleton className="h-10 w-64" />
-          <div className="grid grid-cols-6 gap-4">
-            {[...Array(6)].map((_, i) => (
-              <Skeleton key={i} className="h-24 rounded-2xl" />
-            ))}
-          </div>
-          <Skeleton className="h-96 rounded-2xl" />
-        </div>
-      </AdminLayout>
-    );
-  }
+  const getAssigneeName = () => {
+    if (!assignmentData.assign_to_id) return '';
+    
+    switch (assignmentData.assign_type) {
+      case 'team_leader':
+        return teamLeaders.find(t => t.id === assignmentData.assign_to_id)?.name || '';
+      case 'captain':
+        return captains.find(c => c.id === assignmentData.assign_to_id)?.name || '';
+      case 'dsr':
+        return dsrs.find(d => d.id === assignmentData.assign_to_id)?.name || '';
+      default:
+        return '';
+    }
+  };
+
+  const getFullAssigneeName = (item: InventoryItem) => {
+    if (!item.assigned_to_type || !item.assigned_to_id) return 'Unassigned';
+    
+    switch (item.assigned_to_type) {
+      case 'team_leader':
+        return `TL: ${teamLeaders.find(t => t.id === item.assigned_to_id)?.name || 'Unknown'}`;
+      case 'captain':
+        return `Captain: ${captains.find(c => c.id === item.assigned_to_id)?.name || 'Unknown'}`;
+      case 'dsr':
+        return `DSR: ${dsrs.find(d => d.id === item.assigned_to_id)?.name || 'Unknown'}`;
+      default:
+        return 'Unknown';
+    }
+  };
+
+  const getAssigneeOptions = () => {
+    switch (assignmentData.assign_type) {
+      case 'team_leader':
+        return teamLeaders.map(tl => ({ id: tl.id, name: tl.name, type: 'Team Leader' }));
+      case 'captain':
+        return captains.map(cap => ({ 
+          id: cap.id, 
+          name: cap.name, 
+          type: 'Captain',
+          team_leader: teamLeaders.find(tl => tl.id === cap.team_leader_id)?.name 
+        }));
+      case 'dsr':
+        return dsrs.map(dsr => ({ 
+          id: dsr.id, 
+          name: dsr.name, 
+          type: 'DSR',
+          captain: captains.find(cap => cap.id === dsr.captain_id)?.name,
+          team_leader: captains.find(cap => cap.id === dsr.captain_id)?.team_leaders?.name
+        }));
+      default:
+        return [];
+    }
+  };
+
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case 'available': return 'default';
+      case 'assigned': return 'secondary';
+      case 'sold': return 'success';
+      case 'denied': return 'destructive';
+      case 'returned': return 'outline';
+      default: return 'default';
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'available': return <CheckCircle className="h-3 w-3" />;
+      case 'assigned': return <User className="h-3 w-3" />;
+      case 'sold': return <Package className="h-3 w-3" />;
+      case 'denied': return <XCircle className="h-3 w-3" />;
+      default: return null;
+    }
+  };
+
+  const getAssigneeColor = (type: string | null) => {
+    switch (type) {
+      case 'team_leader': return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'captain': return 'bg-purple-100 text-purple-800 border-purple-200';
+      case 'dsr': return 'bg-orange-100 text-orange-800 border-orange-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
 
   return (
     <AdminLayout>
@@ -324,149 +641,243 @@ export default function AssignStockPage() {
           <div>
             <h1 className="text-3xl font-display font-bold">
               <span className="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-                Assign Stock
+                Stock Assignment Management
               </span>
             </h1>
-            <p className="text-muted-foreground mt-1">Assign inventory to TL, Captain, or DSR with tracking</p>
+            <p className="text-muted-foreground mt-1">
+              Assign, track, and manage stock distribution across your sales team
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={fetchData}
+              disabled={loading}
+              className="glass-button"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setExportDialogOpen(true)}
+              className="glass-button"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export
+            </Button>
           </div>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-          <GlassCard className="text-center">
-            <Package className="h-6 w-6 mx-auto text-primary mb-1" />
-            <p className="text-xl font-bold">{stats.total}</p>
-            <p className="text-xs text-muted-foreground">Total</p>
+        {/* Stats Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <GlassCard className="text-center p-4 hover:shadow-lg transition-shadow">
+            <Package className="h-6 w-6 mx-auto text-primary mb-2" />
+            <p className="text-2xl font-bold">{stats.total}</p>
+            <p className="text-xs text-muted-foreground">Total Stock</p>
+            <Progress value={100} className="h-1 mt-2" />
           </GlassCard>
-          <GlassCard className="text-center">
-            <Package className="h-6 w-6 mx-auto text-green-500 mb-1" />
-            <p className="text-xl font-bold text-green-500">{stats.available}</p>
+          
+          <GlassCard className="text-center p-4 hover:shadow-lg transition-shadow">
+            <CheckCircle className="h-6 w-6 mx-auto text-green-500 mb-2" />
+            <p className="text-2xl font-bold text-green-600">{stats.available}</p>
             <p className="text-xs text-muted-foreground">Available</p>
+            <div className="mt-2 text-xs">
+              {stats.total > 0 ? `${((stats.available / stats.total) * 100).toFixed(1)}%` : '0%'}
+            </div>
           </GlassCard>
-          <GlassCard className="text-center">
-            <Users className="h-6 w-6 mx-auto text-blue-500 mb-1" />
-            <p className="text-xl font-bold text-blue-500">{stats.assignedTL}</p>
-            <p className="text-xs text-muted-foreground">With TL</p>
+          
+          <GlassCard className="text-center p-4 hover:shadow-lg transition-shadow">
+            <Users className="h-6 w-6 mx-auto text-blue-500 mb-2" />
+            <p className="text-2xl font-bold">{stats.assignedTL + stats.assignedCaptain + stats.assignedDSR}</p>
+            <p className="text-xs text-muted-foreground">Assigned</p>
+            <div className="mt-2 text-xs">
+              {stats.assignmentRate}% rate
+            </div>
           </GlassCard>
-          <GlassCard className="text-center">
-            <UserPlus className="h-6 w-6 mx-auto text-purple-500 mb-1" />
-            <p className="text-xl font-bold text-purple-500">{stats.assignedCaptain}</p>
-            <p className="text-xs text-muted-foreground">With Captain</p>
-          </GlassCard>
-          <GlassCard className="text-center">
-            <User className="h-6 w-6 mx-auto text-orange-500 mb-1" />
-            <p className="text-xl font-bold text-orange-500">{stats.assignedDSR}</p>
-            <p className="text-xs text-muted-foreground">With DSR</p>
-          </GlassCard>
-          <GlassCard className="text-center">
-            <Package className="h-6 w-6 mx-auto text-secondary mb-1" />
-            <p className="text-xl font-bold text-secondary">{stats.sold}</p>
+          
+          <GlassCard className="text-center p-4 hover:shadow-lg transition-shadow">
+            <Smartphone className="h-6 w-6 mx-auto text-purple-500 mb-2" />
+            <p className="text-2xl font-bold">{stats.sold}</p>
             <p className="text-xs text-muted-foreground">Sold</p>
+            <div className="mt-2 text-xs text-secondary">
+              Finalized
+            </div>
+          </GlassCard>
+          
+          <GlassCard className="text-center p-4 hover:shadow-lg transition-shadow">
+            <BarChart3 className="h-6 w-6 mx-auto text-orange-500 mb-2" />
+            <p className="text-2xl font-bold">{stats.readyForAssignment}</p>
+            <p className="text-xs text-muted-foreground">Ready to Assign</p>
+            <div className="mt-2 text-xs">
+              {stats.available} available + {stats.assignedTL + stats.assignedCaptain + stats.assignedDSR} assigned
+            </div>
           </GlassCard>
         </div>
 
-        {/* Filters & Actions */}
+        {/* Tabs & Filters */}
         <GlassCard>
-          <div className="flex flex-wrap gap-4 items-center">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-4">
+            <TabsList className="glass-input p-1">
+              <TabsTrigger value="all" className="text-xs px-3">All Items</TabsTrigger>
+              <TabsTrigger value="available" className="text-xs px-3">Available</TabsTrigger>
+              <TabsTrigger value="assigned" className="text-xs px-3">Assigned</TabsTrigger>
+              <TabsTrigger value="sold" className="text-xs px-3">Sold</TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          <div className="flex flex-wrap gap-4 items-center mt-4">
             <div className="flex-1 min-w-[200px]">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by smartcard or serial..."
+                  placeholder="Search by smartcard, serial, or assignee..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-10 glass-input"
                 />
               </div>
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[140px] glass-input">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="available">Available</SelectItem>
-                <SelectItem value="assigned">Assigned</SelectItem>
-                <SelectItem value="sold">Sold</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={assignedFilter} onValueChange={setAssignedFilter}>
-              <SelectTrigger className="w-[160px] glass-input">
-                <SelectValue placeholder="Assignment" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="unassigned">Unassigned</SelectItem>
-                <SelectItem value="assigned">Assigned</SelectItem>
-                <SelectItem value="team_leader">With TL</SelectItem>
-                <SelectItem value="captain">With Captain</SelectItem>
-                <SelectItem value="dsr">With DSR</SelectItem>
-              </SelectContent>
-            </Select>
+
+            <div className="flex flex-wrap gap-2">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[150px] glass-input">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="available">Available</SelectItem>
+                  <SelectItem value="assigned">Assigned</SelectItem>
+                  <SelectItem value="sold">Sold</SelectItem>
+                  <SelectItem value="denied">Denied</SelectItem>
+                  <SelectItem value="returned">Returned</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select value={assignmentFilter} onValueChange={setAssignmentFilter}>
+                <SelectTrigger className="w-[150px] glass-input">
+                  <SelectValue placeholder="Assignment" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Assignments</SelectItem>
+                  <SelectItem value="assigned">Assigned</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="team_leader">Team Leaders</SelectItem>
+                  <SelectItem value="captain">Captains</SelectItem>
+                  <SelectItem value="dsr">DSRs</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select value={zoneFilter} onValueChange={setZoneFilter}>
+                <SelectTrigger className="w-[150px] glass-input">
+                  <SelectValue placeholder="Zone" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Zones</SelectItem>
+                  {zones.map(zone => (
+                    <SelectItem key={zone.id} value={zone.id}>{zone.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {selectedItems.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-border/50">
-              <Badge className="py-2 px-3">{selectedItems.length} selected</Badge>
-              <Button size="sm" onClick={() => setAssignDialogOpen(true)}>
-                <Send className="w-4 h-4 mr-2" /> Assign Stock
-              </Button>
-              <Button size="sm" variant="outline" onClick={handleUnassign}>
-                <ArrowRight className="w-4 h-4 mr-2" /> Unassign
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setBulkEditDialogOpen(true)}>
-                <Edit className="w-4 h-4 mr-2" /> Bulk Edit
-              </Button>
-              <Button size="sm" variant="destructive" onClick={handleBulkDelete}>
-                <Trash2 className="w-4 h-4 mr-2" /> Delete
-              </Button>
+            <div className="mt-4 pt-4 border-t border-border/50">
+              <div className="flex flex-wrap items-center gap-4">
+                <Badge variant="secondary" className="px-3 py-1">
+                  {selectedItems.length} selected
+                </Badge>
+                <Button
+                  size="sm"
+                  onClick={() => setAssignDialogOpen(true)}
+                  disabled={selectedItems.some(id => 
+                    inventory.find(item => item.id === id)?.status === 'sold'
+                  )}
+                >
+                  <Send className="h-4 w-4 mr-2" />
+                  Assign Selected
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleUnassign}
+                  disabled={selectedItems.some(id => 
+                    inventory.find(item => item.id === id)?.status === 'sold'
+                  )}
+                >
+                  <History className="h-4 w-4 mr-2" />
+                  Unassign
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setBulkEditDialogOpen(true)}
+                >
+                  <Edit className="h-4 w-4 mr-2" />
+                  Bulk Edit
+                </Button>
+              </div>
             </div>
           )}
         </GlassCard>
 
-        {/* Table */}
+        {/* Inventory Table */}
         <GlassCard className="overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-border/50">
-                <TableHead className="w-[50px]">
-                  <Checkbox
-                    checked={selectedItems.length === filteredInventory.length && filteredInventory.length > 0}
-                    onCheckedChange={(val) =>
-                      setSelectedItems(val ? filteredInventory.map((i) => i.id) : [])
-                    }
-                  />
-                </TableHead>
-                <TableHead>Smartcard / Serial</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Zone</TableHead>
-                <TableHead>Region</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Assigned To</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredInventory.length === 0 ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="bg-muted/50">
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                    No inventory items found
-                  </TableCell>
+                  <TableHead className="w-[50px]">
+                    <Checkbox
+                      checked={selectedItems.length === eligibleForSelection.length && eligibleForSelection.length > 0}
+                      onCheckedChange={toggleSelectAll}
+                      disabled={eligibleForSelection.length === 0}
+                    />
+                  </TableHead>
+                  <TableHead>Smartcard / Serial</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Zone / Region</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Assigned To</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
                 </TableRow>
-              ) : (
-                filteredInventory.slice(0, 100).map((item) => {
-                  const assigneeName = getAssigneeName(item);
-                  return (
-                    <TableRow key={item.id} className="border-border/30 hover:bg-primary/5">
+              </TableHeader>
+              <TableBody>
+                {loading ? (
+                  Array(10).fill(0).map((_, i) => (
+                    <TableRow key={i}>
+                      <TableCell colSpan={8}>
+                        <Skeleton className="h-12 w-full" />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : filteredInventory.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="h-32 text-center">
+                      <div className="flex flex-col items-center justify-center">
+                        <Package className="h-12 w-12 text-muted-foreground/50 mb-4" />
+                        <p className="text-muted-foreground">No inventory items found</p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Try adjusting your filters or add new inventory
+                        </p>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredInventory.map((item) => (
+                    <TableRow 
+                      key={item.id} 
+                      className={`hover:bg-primary/5 transition-colors ${
+                        selectedItems.includes(item.id) ? 'bg-primary/10' : ''
+                      }`}
+                    >
                       <TableCell>
                         <Checkbox
                           checked={selectedItems.includes(item.id)}
-                          onCheckedChange={() =>
-                            setSelectedItems((prev) =>
-                              prev.includes(item.id)
-                                ? prev.filter((id) => id !== item.id)
-                                : [...prev, item.id]
-                            )
-                          }
+                          onCheckedChange={() => toggleSelect(item.id)}
+                          disabled={item.status === 'sold' || item.status === 'denied'}
                         />
                       </TableCell>
                       <TableCell>
@@ -477,161 +888,333 @@ export default function AssignStockPage() {
                         <Badge variant="outline">{item.stock_type}</Badge>
                       </TableCell>
                       <TableCell>
-                        {item.zone_name ? (
-                          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                            {item.zone_name}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">-</span>
-                        )}
+                        <div className="space-y-1">
+                          {item.zone_name && (
+                            <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                              {item.zone_name}
+                            </Badge>
+                          )}
+                          {item.region_name && (
+                            <div className="text-xs text-muted-foreground">{item.region_name}</div>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
-                        {item.region_name ? (
-                          <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
-                            {item.region_name}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          className={
-                            item.status === 'available'
-                              ? 'bg-green-500/20 text-green-500 border-green-500/30'
-                              : item.status === 'assigned'
-                              ? 'bg-blue-500/20 text-blue-500 border-blue-500/30'
-                              : 'bg-secondary/20 text-secondary border-secondary/30'
-                          }
+                        <Badge 
+                          variant={getStatusBadgeVariant(item.status)}
+                          className="gap-1"
                         >
+                          {getStatusIcon(item.status)}
                           {item.status}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {item.assigned_to_type && assigneeName ? (
+                        {item.assigned_to_type && item.assigned_to_id ? (
                           <div className="flex items-center gap-2">
-                            <Badge
-                              className={
-                                item.assigned_to_type === 'team_leader'
-                                  ? 'bg-blue-500/20 text-blue-500 text-xs'
-                                  : item.assigned_to_type === 'captain'
-                                  ? 'bg-purple-500/20 text-purple-500 text-xs'
-                                  : 'bg-orange-500/20 text-orange-500 text-xs'
-                              }
-                            >
-                              {item.assigned_to_type === 'team_leader'
-                                ? 'TL'
-                                : item.assigned_to_type === 'captain'
-                                ? 'Cpt'
-                                : 'DSR'}
+                            <Badge variant="outline" className={getAssigneeColor(item.assigned_to_type)}>
+                              {item.assigned_to_type === 'team_leader' ? 'TL' : 
+                               item.assigned_to_type === 'captain' ? 'CPT' : 'DSR'}
                             </Badge>
-                            <span className="text-sm">{assigneeName}</span>
+                            <span className="text-sm">{getFullAssigneeName(item)}</span>
                           </div>
                         ) : (
-                          <span className="text-muted-foreground text-sm">-</span>
+                          <span className="text-sm text-muted-foreground italic">Unassigned</span>
                         )}
                       </TableCell>
+                      <TableCell>
+                        <div className="text-sm">
+                          {new Date(item.created_at).toLocaleDateString()}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => fetchAssignmentHistory(item.id)}
+                            title="View History"
+                          >
+                            <History className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-          {filteredInventory.length > 100 && (
-            <div className="p-4 text-center text-muted-foreground text-sm">
-              Showing 100 of {filteredInventory.length} items
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          
+          {filteredInventory.length > 0 && (
+            <div className="p-4 border-t border-border/50">
+              <div className="flex justify-between items-center">
+                <div className="text-sm text-muted-foreground">
+                  Showing {filteredInventory.length} of {inventory.length} items
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {eligibleForSelection.length} eligible for assignment
+                </div>
+              </div>
             </div>
           )}
         </GlassCard>
-
-        {/* Assign Dialog */}
-        <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
-          <DialogContent className="glass-card border-border/50">
-            <DialogHeader>
-              <DialogTitle>Assign Stock ({selectedItems.length} items)</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label>Assign To</Label>
-                <Select
-                  value={assignmentData.assign_type}
-                  onValueChange={(v) => setAssignmentData({ assign_type: v, assign_to_id: '' })}
-                >
-                  <SelectTrigger className="glass-input">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="team_leader">Team Leader</SelectItem>
-                    <SelectItem value="captain">Captain</SelectItem>
-                    <SelectItem value="dsr">DSR</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Select Person</Label>
-                <Select
-                  value={assignmentData.assign_to_id}
-                  onValueChange={(v) => setAssignmentData({ ...assignmentData, assign_to_id: v })}
-                >
-                  <SelectTrigger className="glass-input">
-                    <SelectValue placeholder="Select..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {getAssigneeOptions().map((person: any) => (
-                      <SelectItem key={person.id} value={person.id}>
-                        {person.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleAssign} className="bg-gradient-to-r from-primary to-secondary">
-                <Send className="w-4 h-4 mr-2" /> Assign
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Bulk Edit Dialog */}
-        <Dialog open={bulkEditDialogOpen} onOpenChange={setBulkEditDialogOpen}>
-          <DialogContent className="glass-card border-border/50">
-            <DialogHeader>
-              <DialogTitle>Bulk Edit ({selectedItems.length} items)</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label>Status</Label>
-                <Select
-                  value={bulkEditData.status}
-                  onValueChange={(v) => setBulkEditData({ ...bulkEditData, status: v })}
-                >
-                  <SelectTrigger className="glass-input">
-                    <SelectValue placeholder="Select status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="available">Available</SelectItem>
-                    <SelectItem value="assigned">Assigned</SelectItem>
-                    <SelectItem value="sold">Sold</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setBulkEditDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleBulkEdit} className="bg-gradient-to-r from-primary to-secondary">
-                <Edit className="w-4 h-4 mr-2" /> Update
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       </div>
+
+      {/* Assignment Dialog */}
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="glass-card border-border/50 max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign Stock</DialogTitle>
+            <DialogDescription>
+              Assign {selectedItems.length} selected items to a team member
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Assign To</Label>
+              <Select
+                value={assignmentData.assign_type}
+                onValueChange={(v) => setAssignmentData({...assignmentData, assign_type: v, assign_to_id: ''})}
+              >
+                <SelectTrigger className="glass-input">
+                  <SelectValue placeholder="Select assignment type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="team_leader">Team Leader</SelectItem>
+                  <SelectItem value="captain">Captain</SelectItem>
+                  <SelectItem value="dsr">DSR</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Select Recipient</Label>
+              <Select
+                value={assignmentData.assign_to_id}
+                onValueChange={(v) => setAssignmentData({...assignmentData, assign_to_id: v})}
+                disabled={!assignmentData.assign_type}
+              >
+                <SelectTrigger className="glass-input">
+                  <SelectValue placeholder={`Select ${assignmentData.assign_type}`} />
+                </SelectTrigger>
+                <SelectContent>
+                  {getAssigneeOptions().map(person => (
+                    <SelectItem key={person.id} value={person.id}>
+                      <div className="flex flex-col">
+                        <span>{person.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {person.type}
+                          {('team_leader' in person) && ` • TL: ${person.team_leader}`}
+                          {('captain' in person) && ` • CPT: ${person.captain}`}
+                        </span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Effective Date</Label>
+              <Input
+                type="date"
+                value={assignmentData.effective_date}
+                onChange={(e) => setAssignmentData({...assignmentData, effective_date: e.target.value})}
+                className="glass-input"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes (Optional)</Label>
+              <Textarea
+                placeholder="Add any notes about this assignment..."
+                value={assignmentData.notes}
+                onChange={(e) => setAssignmentData({...assignmentData, notes: e.target.value})}
+                className="glass-input"
+                rows={3}
+              />
+            </div>
+
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-yellow-600 mt-0.5" />
+                <div className="text-sm text-yellow-800">
+                  <p className="font-medium">Important:</p>
+                  <p className="mt-1">This action will mark selected items as "assigned" and link them to the selected team member.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAssign} disabled={!assignmentData.assign_to_id || loading}>
+              {loading ? 'Assigning...' : 'Confirm Assignment'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Edit Dialog */}
+      <Dialog open={bulkEditDialogOpen} onOpenChange={setBulkEditDialogOpen}>
+        <DialogContent className="glass-card border-border/50">
+          <DialogHeader>
+            <DialogTitle>Bulk Edit {selectedItems.length} Items</DialogTitle>
+            <DialogDescription>
+              Update status and add notes for selected items
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Status Update</Label>
+              <Select
+                value={bulkEditData.status}
+                onValueChange={(v) => setBulkEditData({...bulkEditData, status: v})}
+              >
+                <SelectTrigger className="glass-input">
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="available">Available</SelectItem>
+                  <SelectItem value="assigned">Assigned</SelectItem>
+                  <SelectItem value="sold">Sold</SelectItem>
+                  <SelectItem value="denied">Denied</SelectItem>
+                  <SelectItem value="returned">Returned</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes (Optional)</Label>
+              <Textarea
+                placeholder="Add notes for this bulk update..."
+                value={bulkEditData.notes}
+                onChange={(e) => setBulkEditData({...bulkEditData, notes: e.target.value})}
+                className="glass-input"
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkEditDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkEdit} disabled={loading}>
+              {loading ? 'Updating...' : 'Update Items'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assignment History Dialog */}
+      <Dialog open={historyDialogOpen} onOpenChange={setHistoryDialogOpen}>
+        <DialogContent className="glass-card border-border/50 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Assignment History</DialogTitle>
+            <DialogDescription>
+              {selectedInventoryItem && (
+                <div className="mt-2">
+                  <p className="font-medium">{selectedInventoryItem.smartcard_number}</p>
+                  <p className="text-sm text-muted-foreground">{selectedInventoryItem.serial_number}</p>
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="max-h-96 overflow-y-auto">
+            {assignmentHistory.length === 0 ? (
+              <div className="text-center py-8">
+                <History className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
+                <p className="text-muted-foreground">No assignment history found</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {assignmentHistory.map((history, index) => (
+                  <div key={history.id} className="border-l-2 border-primary pl-4 py-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-medium">
+                          Assigned to {history.assigned_to_type}: {
+                            history.assigned_to_type === 'team_leader' 
+                              ? teamLeaders.find(t => t.id === history.assigned_to_id)?.name
+                              : history.assigned_to_type === 'captain'
+                              ? captains.find(c => c.id === history.assigned_to_id)?.name
+                              : dsrs.find(d => d.id === history.assigned_to_id)?.name
+                          }
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          By {history.assigned_by} • {new Date(history.assigned_at).toLocaleString()}
+                        </p>
+                        {history.notes && (
+                          <p className="text-sm mt-2 p-2 bg-muted/50 rounded">{history.notes}</p>
+                        )}
+                      </div>
+                      <Badge variant="outline" className="ml-2">
+                        #{assignmentHistory.length - index}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Export Dialog */}
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent className="glass-card border-border/50">
+          <DialogHeader>
+            <DialogTitle>Export Data</DialogTitle>
+            <DialogDescription>
+              Choose what data to export as Excel spreadsheet
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid grid-cols-1 gap-4">
+            <Button
+              variant="outline"
+              onClick={() => handleExport('selected')}
+              disabled={selectedItems.length === 0 || exporting}
+              className="justify-start"
+            >
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Export Selected Items ({selectedItems.length})
+            </Button>
+            
+            <Button
+              variant="outline"
+              onClick={() => handleExport('filtered')}
+              disabled={filteredInventory.length === 0 || exporting}
+              className="justify-start"
+            >
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Export Filtered Items ({filteredInventory.length})
+            </Button>
+            
+            <Button
+              variant="outline"
+              onClick={() => handleExport('all')}
+              disabled={inventory.length === 0 || exporting}
+              className="justify-start"
+            >
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Export All Items ({inventory.length})
+            </Button>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportDialogOpen(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AdminLayout>
   );
 }

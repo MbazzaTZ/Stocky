@@ -11,6 +11,13 @@ import {
   X,
   Check,
   AlertCircle,
+  Users,
+  MapPin,
+  Box,
+  ShoppingCart,
+  User,
+  UserPlus,
+  Shield,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import AdminLayout from '@/components/layout/AdminLayout';
@@ -81,6 +88,32 @@ interface Region {
   zone_id: string | null;
 }
 
+interface TeamLeader {
+  id: string;
+  name: string;
+}
+
+interface Captain {
+  id: string;
+  name: string;
+}
+
+interface DSR {
+  id: string;
+  name: string;
+}
+
+interface RegionSummary {
+  region_id: string;
+  region_name: string;
+  zone_name: string;
+  total: number;
+  available: number;
+  sold: number;
+  assigned: number;
+  inhand: number;
+}
+
 export default function InventoryPage() {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -88,12 +121,17 @@ export default function InventoryPage() {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [regions, setRegions] = useState<Region[]>([]);
+  const [teamLeaders, setTeamLeaders] = useState<TeamLeader[]>([]);
+  const [captains, setCaptains] = useState<Captain[]>([]);
+  const [dsrs, setDsrs] = useState<DSR[]>([]);
   const [loading, setLoading] = useState(true);
+  const [regionSummaries, setRegionSummaries] = useState<RegionSummary[]>([]);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [zoneFilter, setZoneFilter] = useState('all');
+  const [regionFilter, setRegionFilter] = useState('all');
 
   // Dialogs
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -128,19 +166,132 @@ export default function InventoryPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [invRes, zoneRes, regionRes] = await Promise.all([
+      const [invRes, zoneRes, regionRes, tlRes, captainRes, dsrRes] = await Promise.all([
         supabase.from('inventory').select('*').order('created_at', { ascending: false }),
         supabase.from('zones').select('*').order('name'),
         supabase.from('regions').select('*').order('name'),
+        supabase.from('team_leaders').select('id, name').order('name'),
+        supabase.from('captains').select('id, name').order('name'),
+        supabase.from('dsrs').select('id, name').order('name'),
       ]);
 
-      if (invRes.data) setInventory(invRes.data);
+      if (invRes.data) {
+        setInventory(invRes.data);
+        calculateRegionSummaries(invRes.data, zoneRes.data || [], regionRes.data || []);
+      }
       if (zoneRes.data) setZones(zoneRes.data);
       if (regionRes.data) setRegions(regionRes.data);
+      if (tlRes.data) setTeamLeaders(tlRes.data);
+      if (captainRes.data) setCaptains(captainRes.data);
+      if (dsrRes.data) setDsrs(dsrRes.data);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const calculateRegionSummaries = (invData: InventoryItem[], zoneData: Zone[], regionData: Region[]) => {
+    const summaries: RegionSummary[] = [];
+    
+    // Create summary for each region
+    regionData.forEach(region => {
+      const regionItems = invData.filter(item => item.region_id === region.id);
+      const total = regionItems.length;
+      const available = regionItems.filter(item => item.status === 'available').length;
+      const sold = regionItems.filter(item => item.status === 'sold').length;
+      const assigned = regionItems.filter(item => item.assigned_to_id !== null).length;
+      const inhand = available - assigned; // Inhand = available minus assigned
+      
+      const zoneName = zoneData.find(z => z.id === region.zone_id)?.name || 'Unknown Zone';
+      
+      summaries.push({
+        region_id: region.id,
+        region_name: region.name,
+        zone_name: zoneName,
+        total,
+        available,
+        sold,
+        assigned,
+        inhand: Math.max(inhand, 0) // Ensure non-negative
+      });
+    });
+    
+    // Add summary for unassigned items (no region)
+    const unassignedRegionItems = invData.filter(item => !item.region_id);
+    if (unassignedRegionItems.length > 0) {
+      const total = unassignedRegionItems.length;
+      const available = unassignedRegionItems.filter(item => item.status === 'available').length;
+      const sold = unassignedRegionItems.filter(item => item.status === 'sold').length;
+      const assigned = unassignedRegionItems.filter(item => item.assigned_to_id !== null).length;
+      const inhand = available - assigned;
+      
+      summaries.push({
+        region_id: 'unassigned',
+        region_name: 'Unassigned',
+        zone_name: 'No Zone',
+        total,
+        available,
+        sold,
+        assigned,
+        inhand: Math.max(inhand, 0)
+      });
+    }
+    
+    setRegionSummaries(summaries);
+  };
+
+  const getAssignedName = (item: InventoryItem) => {
+    if (!item.assigned_to_type || !item.assigned_to_id) return null;
+    
+    switch (item.assigned_to_type) {
+      case 'team_leader':
+        return teamLeaders.find(tl => tl.id === item.assigned_to_id)?.name || 'Unknown TL';
+      case 'captain':
+        return captains.find(c => c.id === item.assigned_to_id)?.name || 'Unknown Captain';
+      case 'dsr':
+        return dsrs.find(d => d.id === item.assigned_to_id)?.name || 'Unknown DSR';
+      default:
+        return null;
+    }
+  };
+
+  const getAssignedIcon = (type: string | null) => {
+    switch (type) {
+      case 'team_leader':
+        return <Shield className="h-3 w-3" />;
+      case 'captain':
+        return <UserPlus className="h-3 w-3" />;
+      case 'dsr':
+        return <User className="h-3 w-3" />;
+      default:
+        return null;
+    }
+  };
+
+  const getAssignedBadgeColor = (type: string | null) => {
+    switch (type) {
+      case 'team_leader':
+        return 'bg-purple-500/20 text-purple-500 border-purple-500/30';
+      case 'captain':
+        return 'bg-blue-500/20 text-blue-500 border-blue-500/30';
+      case 'dsr':
+        return 'bg-green-500/20 text-green-500 border-green-500/30';
+      default:
+        return 'bg-gray-500/20 text-gray-500 border-gray-500/30';
+    }
+  };
+
+  const getAssignedRoleName = (type: string | null) => {
+    switch (type) {
+      case 'team_leader':
+        return 'TL';
+      case 'captain':
+        return 'Captain';
+      case 'dsr':
+        return 'DSR';
+      default:
+        return 'Unknown';
     }
   };
 
@@ -378,12 +529,18 @@ export default function InventoryPage() {
       i.serial_number.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === 'all' || i.status === statusFilter;
     const matchesZone = zoneFilter === 'all' || i.zone_id === zoneFilter;
-    return matchesSearch && matchesStatus && matchesZone;
+    const matchesRegion = regionFilter === 'all' || i.region_id === regionFilter;
+    return matchesSearch && matchesStatus && matchesZone && matchesRegion;
   });
 
   const filteredRegions = formData.zone_id
     ? regions.filter((r) => r.zone_id === formData.zone_id)
     : regions;
+
+  // Filter regions for the dropdown based on selected zone
+  const filteredRegionsForFilter = zoneFilter === 'all' 
+    ? regions 
+    : regions.filter(r => r.zone_id === zoneFilter);
 
   if (loading) {
     return (
@@ -401,11 +558,13 @@ export default function InventoryPage() {
     );
   }
 
+  // Overall statistics
   const stats = {
     total: inventory.length,
     available: inventory.filter((i) => i.status === 'available').length,
     sold: inventory.filter((i) => i.status === 'sold').length,
     assigned: inventory.filter((i) => i.assigned_to_id).length,
+    inhand: inventory.filter((i) => i.status === 'available').length - inventory.filter((i) => i.assigned_to_id).length,
   };
 
   return (
@@ -454,10 +613,10 @@ export default function InventoryPage() {
           </div>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Overall Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <GlassCard className="text-center">
-            <Package className="h-8 w-8 mx-auto text-primary mb-2" />
+            <Box className="h-8 w-8 mx-auto text-primary mb-2" />
             <p className="text-2xl font-bold">{stats.total}</p>
             <p className="text-xs text-muted-foreground">Total Stock</p>
           </GlassCard>
@@ -467,16 +626,87 @@ export default function InventoryPage() {
             <p className="text-xs text-muted-foreground">Available</p>
           </GlassCard>
           <GlassCard className="text-center">
-            <X className="h-8 w-8 mx-auto text-secondary mb-2" />
-            <p className="text-2xl font-bold text-secondary">{stats.sold}</p>
+            <X className="h-8 w-8 mx-auto text-red-500 mb-2" />
+            <p className="text-2xl font-bold text-red-500">{stats.sold}</p>
             <p className="text-xs text-muted-foreground">Sold</p>
           </GlassCard>
           <GlassCard className="text-center">
-            <Package className="h-8 w-8 mx-auto text-primary mb-2" />
-            <p className="text-2xl font-bold">{stats.assigned}</p>
+            <Users className="h-8 w-8 mx-auto text-blue-500 mb-2" />
+            <p className="text-2xl font-bold text-blue-500">{stats.assigned}</p>
             <p className="text-xs text-muted-foreground">Assigned</p>
           </GlassCard>
+          <GlassCard className="text-center">
+            <ShoppingCart className="h-8 w-8 mx-auto text-amber-500 mb-2" />
+            <p className="text-2xl font-bold text-amber-500">{stats.inhand}</p>
+            <p className="text-xs text-muted-foreground">In-hand</p>
+          </GlassCard>
         </div>
+
+        {/* Region Summary Cards */}
+        {regionSummaries.length > 0 && (
+          <div>
+            <h3 className="text-lg font-semibold mb-4">Region-wise Summary</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {regionSummaries.map((summary) => (
+                <GlassCard key={summary.region_id} className="p-4">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h4 className="font-semibold text-base">{summary.region_name}</h4>
+                      <p className="text-xs text-muted-foreground">{summary.zone_name}</p>
+                    </div>
+                    <Badge variant="outline" className="text-xs">
+                      {summary.total} Total
+                    </Badge>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm">Available</span>
+                      <Badge className="bg-green-500/20 text-green-500 text-xs">
+                        {summary.available}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm">Sold</span>
+                      <Badge className="bg-red-500/20 text-red-500 text-xs">
+                        {summary.sold}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm">Assigned</span>
+                      <Badge className="bg-blue-500/20 text-blue-500 text-xs">
+                        {summary.assigned}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm">In-hand</span>
+                      <Badge className="bg-amber-500/20 text-amber-500 text-xs">
+                        {summary.inhand}
+                      </Badge>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-3 pt-3 border-t border-border/30">
+                    <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                      <div className="text-center">
+                        <div>Available %</div>
+                        <div className="font-semibold">
+                          {summary.total > 0 ? ((summary.available / summary.total) * 100).toFixed(1) : 0}%
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <div>Sold %</div>
+                        <div className="font-semibold">
+                          {summary.total > 0 ? ((summary.sold / summary.total) * 100).toFixed(1) : 0}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </GlassCard>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Filters */}
         <GlassCard>
@@ -492,7 +722,10 @@ export default function InventoryPage() {
                 />
               </div>
             </div>
-            <Select value={zoneFilter} onValueChange={setZoneFilter}>
+            <Select value={zoneFilter} onValueChange={(value) => {
+              setZoneFilter(value);
+              setRegionFilter('all'); // Reset region filter when zone changes
+            }}>
               <SelectTrigger className="w-[150px] glass-input">
                 <SelectValue placeholder="Zone" />
               </SelectTrigger>
@@ -505,6 +738,20 @@ export default function InventoryPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Select value={regionFilter} onValueChange={setRegionFilter}>
+              <SelectTrigger className="w-[150px] glass-input">
+                <SelectValue placeholder="Region" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Regions</SelectItem>
+                {filteredRegionsForFilter.map((r) => (
+                  <SelectItem key={r.id} value={r.id}>
+                    {r.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-[150px] glass-input">
                 <SelectValue placeholder="Status" />
@@ -513,6 +760,8 @@ export default function InventoryPage() {
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="available">Available</SelectItem>
                 <SelectItem value="sold">Sold</SelectItem>
+                <SelectItem value="assigned">Assigned</SelectItem>
+                <SelectItem value="inhand">In-hand</SelectItem>
               </SelectContent>
             </Select>
             {selectedItems.length > 0 && (
@@ -539,7 +788,7 @@ export default function InventoryPage() {
                 <TableHead>Smartcard / Serial</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Zone / Region</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Status & Assignment</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -551,61 +800,110 @@ export default function InventoryPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredInventory.slice(0, 50).map((item) => (
-                  <TableRow key={item.id} className="border-border/30 hover:bg-primary/5">
-                    <TableCell>
-                      <Checkbox
-                        checked={selectedItems.includes(item.id)}
-                        onCheckedChange={() =>
-                          setSelectedItems((prev) =>
-                            prev.includes(item.id)
-                              ? prev.filter((id) => id !== item.id)
-                              : [...prev, item.id]
-                          )
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium">{item.smartcard_number}</div>
-                      <div className="text-xs text-muted-foreground">{item.serial_number}</div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{item.stock_type}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="text-sm">{zones.find((z) => z.id === item.zone_id)?.name || '-'}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {regions.find((r) => r.id === item.region_id)?.name || '-'}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className={
-                          item.status === 'available'
-                            ? 'bg-green-500/20 text-green-500 border-green-500/30'
-                            : 'bg-secondary/20 text-secondary border-secondary/30'
-                        }
-                      >
-                        {item.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => handleEditClick(item)}>
-                        <Edit className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => {
-                          setDeleteItem(item);
-                          setDeleteDialogOpen(true);
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4 text-destructive" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
+                filteredInventory.slice(0, 50).map((item) => {
+                  const assignedName = getAssignedName(item);
+                  const assignedIcon = getAssignedIcon(item.assigned_to_type);
+                  const assignedBadgeColor = getAssignedBadgeColor(item.assigned_to_type);
+                  const assignedRoleName = getAssignedRoleName(item.assigned_to_type);
+                  
+                  // Determine if item is "In-hand" (available but not assigned)
+                  const isInhand = item.status === 'available' && !item.assigned_to_id;
+                  
+                  return (
+                    <TableRow key={item.id} className="border-border/30 hover:bg-primary/5">
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedItems.includes(item.id)}
+                          onCheckedChange={() =>
+                            setSelectedItems((prev) =>
+                              prev.includes(item.id)
+                                ? prev.filter((id) => id !== item.id)
+                                : [...prev, item.id]
+                            )
+                          }
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium">{item.smartcard_number}</div>
+                        <div className="text-xs text-muted-foreground">{item.serial_number}</div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{item.stock_type}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm">{zones.find((z) => z.id === item.zone_id)?.name || '-'}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {regions.find((r) => r.id === item.region_id)?.name || '-'}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="space-y-2">
+                          {/* Main Status Badge */}
+                          <div>
+                            {item.status === 'sold' ? (
+                              <Badge className="bg-red-500/20 text-red-500 border-red-500/30">
+                                <X className="h-3 w-3 mr-1" />
+                                Sold
+                              </Badge>
+                            ) : isInhand ? (
+                              <Badge className="bg-amber-500/20 text-amber-500 border-amber-500/30">
+                                <ShoppingCart className="h-3 w-3 mr-1" />
+                                In-hand
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-green-500/20 text-green-500 border-green-500/30">
+                                <Check className="h-3 w-3 mr-1" />
+                                Available
+                              </Badge>
+                            )}
+                          </div>
+                          
+                          {/* Assignment Details */}
+                          {item.assigned_to_id && assignedName && (
+                            <div className="flex items-center gap-2">
+                              <Badge className={`${assignedBadgeColor} text-xs flex items-center gap-1`}>
+                                {assignedIcon}
+                                {assignedRoleName}: {assignedName}
+                              </Badge>
+                            </div>
+                          )}
+                          
+                          {/* Region Assignment (if no personal assignment) */}
+                          {!item.assigned_to_id && item.region_id && (
+                            <div className="flex items-center gap-1">
+                              <Badge variant="outline" className="text-xs flex items-center gap-1">
+                                <MapPin className="h-3 w-3" />
+                                Region: {regions.find(r => r.id === item.region_id)?.name}
+                              </Badge>
+                            </div>
+                          )}
+                          
+                          {/* No Assignment Status */}
+                          {!item.assigned_to_id && !item.region_id && item.status === 'available' && (
+                            <Badge variant="outline" className="text-xs">
+                              Unassigned
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="icon" onClick={() => handleEditClick(item)}>
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            setDeleteItem(item);
+                            setDeleteDialogOpen(true);
+                          }}
+                        >
+                          <Trash2 className="w-4 h-4 text-destructive" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

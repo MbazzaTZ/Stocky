@@ -10,6 +10,10 @@ import {
   X,
   CreditCard,
   User,
+  Check,
+  XCircle,
+  PackageOpen,
+  PackageCheck,
 } from 'lucide-react';
 import AdminLayout from '@/components/layout/AdminLayout';
 import GlassCard from '@/components/ui/GlassCard';
@@ -635,6 +639,56 @@ export default function RecordSalePage() {
     setDialogOpen(true);
   };
 
+  // Function to update payment status
+  const handleUpdatePaymentStatus = async (sale: SaleRecord, status: string) => {
+    try {
+      const { error } = await supabase
+        .from('sales_records')
+        .update({ payment_status: status })
+        .eq('id', sale.id);
+
+      if (error) throw error;
+
+      toast({
+        title: 'Success',
+        description: `Payment status updated to ${status}`,
+      });
+
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error?.message || 'Failed to update payment status',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Function to update package status
+  const handleUpdatePackageStatus = async (sale: SaleRecord, status: string) => {
+    try {
+      const { error } = await supabase
+        .from('sales_records')
+        .update({ package_status: status })
+        .eq('id', sale.id);
+
+      if (error) throw error;
+
+      toast({
+        title: 'Success',
+        description: `Package status updated to ${status}`,
+      });
+
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error?.message || 'Failed to update package status',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // Filter captains based on selected TL
   const filteredCaptains = formData.team_leader_id
     ? captains.filter((c) => c.team_leader_id === formData.team_leader_id)
@@ -817,28 +871,76 @@ export default function RecordSalePage() {
                     </TableCell>
                     <TableCell>{new Date(sale.sale_date).toLocaleDateString()}</TableCell>
                     <TableCell>
-                      <Badge
-                        className={
-                          sale.payment_status === 'Paid'
-                            ? 'bg-green-500/20 text-green-500 border-green-500/30'
-                            : sale.payment_status === 'Partial'
-                            ? 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30'
-                            : 'bg-destructive/20 text-destructive border-destructive/30'
-                        }
-                      >
-                        {sale.payment_status}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          className={
+                            sale.payment_status === 'Paid'
+                              ? 'bg-green-500/20 text-green-500 border-green-500/30'
+                              : sale.payment_status === 'Partial'
+                              ? 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30'
+                              : 'bg-destructive/20 text-destructive border-destructive/30'
+                          }
+                        >
+                          {sale.payment_status}
+                        </Badge>
+                        {sale.payment_status === 'Unpaid' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={() => handleUpdatePaymentStatus(sale, 'Paid')}
+                            title="Mark as Paid"
+                          >
+                            <Check className="h-3 w-3 text-green-500" />
+                          </Button>
+                        )}
+                        {sale.payment_status === 'Paid' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={() => handleUpdatePaymentStatus(sale, 'Unpaid')}
+                            title="Mark as Unpaid"
+                          >
+                            <XCircle className="h-3 w-3 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        className={
-                          sale.package_status === 'Packaged'
-                            ? 'bg-green-500/20 text-green-500 border-green-500/30'
-                            : 'bg-destructive/20 text-destructive border-destructive/30'
-                        }
-                      >
-                        {sale.package_status}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          className={
+                            sale.package_status === 'Packaged'
+                              ? 'bg-green-500/20 text-green-500 border-green-500/30'
+                              : 'bg-destructive/20 text-destructive border-destructive/30'
+                          }
+                        >
+                          {sale.package_status}
+                        </Badge>
+                        {sale.package_status === 'No Package' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={() => handleUpdatePackageStatus(sale, 'Packaged')}
+                            title="Mark as Packaged"
+                          >
+                            <PackageCheck className="h-3 w-3 text-green-500" />
+                          </Button>
+                        )}
+                        {sale.package_status === 'Packaged' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={() => handleUpdatePackageStatus(sale, 'No Package')}
+                            title="Mark as No Package"
+                          >
+                            <PackageOpen className="h-3 w-3 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="text-xs space-y-1">
@@ -860,19 +962,55 @@ export default function RecordSalePage() {
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => handleEditClick(sale)}>
-                        <Edit className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => {
-                          setDeleteSale(sale);
-                          setDeleteDialogOpen(true);
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4 text-destructive" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 w-8 p-0"
+                          onClick={() => handleUpdatePaymentStatus(sale, sale.payment_status === 'Paid' ? 'Unpaid' : 'Paid')}
+                          title={sale.payment_status === 'Paid' ? 'Mark as Unpaid' : 'Mark as Paid'}
+                        >
+                          {sale.payment_status === 'Paid' ? (
+                            <XCircle className="h-4 w-4 text-destructive" />
+                          ) : (
+                            <Check className="h-4 w-4 text-green-500" />
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 w-8 p-0"
+                          onClick={() => handleUpdatePackageStatus(sale, sale.package_status === 'Packaged' ? 'No Package' : 'Packaged')}
+                          title={sale.package_status === 'Packaged' ? 'Mark as No Package' : 'Mark as Packaged'}
+                        >
+                          {sale.package_status === 'Packaged' ? (
+                            <PackageOpen className="h-4 w-4 text-destructive" />
+                          ) : (
+                            <PackageCheck className="h-4 w-4 text-green-500" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => handleEditClick(sale)}
+                          title="Edit Sale"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => {
+                            setDeleteSale(sale);
+                            setDeleteDialogOpen(true);
+                          }}
+                          title="Delete Sale"
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
